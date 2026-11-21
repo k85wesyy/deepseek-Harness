@@ -1,0 +1,234 @@
+name: build-apk
+
+# 手动触发。三种模式：
+#   deps   —— 只做依赖与工具链自检（快，用来验证 Release 资源齐全、aapt 能跑）
+#   build  —— 完整构建 APK
+#   all    —— 自检 + 构建
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '构建模式'
+        required: true
+        default: 'build'
+        type: choice
+        options: [deps, build, all]
+      release_tag:
+        description: '存放素材的 Release 标签'
+        required: true
+        default: 'assets-v1'
+  push:
+    branches: [main]
+    paths:
+      - 'build.sh'
+      - 'src/**'
+      - 'res/**'
+      - 'AndroidManifest.xml'
+      - 'tools/**'
+      - '.github/workflows/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # ★ GITHUB_TOKEN 默认是只读的，创建 Release 会 403 "Resource not accessible by integration"。
+    #   必须显式声明 contents: write。
+    permissions:
+      contents: write
+    steps:
+      # ── 环境 ────────────────────────────────────────────────────────────
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装 Android build-tools 35.0.0 与 platform 33
+        run: |
+          echo "== sdkmanager 就位 =="
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-33" "build-tools;35.0.0" >/dev/null
+          echo "ANDROID_JAR=$ANDROID_HOME/platforms/android-33/android.jar"
+          ls "$ANDROID_HOME/platforms/android-33/android.jar"
+          ls "$ANDROID_HOME/build-tools/35.0.0/" | head -20
+
+      # ── 素材：从 Release 拉 ──────────────────────────────────────────────
+      - name: 下载构建素材（payload / GeckoView / androidx）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -e
+          mkdir -p assets-dl
+          # CI 里没有本地 git remote 上下文，必须显式给 --repo
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.tar.gz' --dir assets-dl
+          ls -la assets-dl
+          echo "== 校验大小（防止下载被截断）=="
+          for f in assets-dl/*.tar.gz; do
+            printf "  %-40s %s\n" "$(basename "$f")" "$(stat -c %s "$f")"
+          done
+
+      - name: 还原 devhome 目录结构
+        run: |
+          set -e
+          export H="$PWD/devhome"
+          mkdir -p "$H"
+          # payload 三件套
+          tar xzf assets-dl/payload-runtime.tar.gz -C "$H"
+          tar xzf assets-dl/payload-dshroot.tar.gz -C "$H"
+          mkdir -p "$H/.dsh"
+          tar xzf assets-dl/dsh-cfg.tar.gz -C "$H/.dsh"
+          # GeckoView 套件
+          tar xzf assets-dl/_gvmin.tar.gz -C "$H"
+          # androidx / kotlin 等传递依赖
+          mkdir -p "$H/geckoview/androidx"
+          tar xzf assets-dl/_gvdeps.tar.gz -C "$H/geckoview/androidx"
+          # bin / git / npm / pnpm / python / rish（build.sh 打包 payload 要用）
+          tar xzf assets-dl/payload-extras.tar.gz -C "$H"
+          echo "== devhome 结构 =="
+          ls -la "$H"
+          ls -la "$H/geckoview" | head
+          ls "$H/geckoview/androidx" | head -20
+          echo "  androidx 共 $(ls "$H/geckoview/androidx" | wc -l) 个"
+
+      - name: 生成 build.env.sh（把 CI 路径喂给 build.sh）
+        run: |
+          set -e
+          mkdir -p devhome/build
+          # 不用 heredoc：里面的 $PATH 转义在 YAML + GitHub 解析链上容易出问题，
+          # 改用 printf 逐行写，每一行都是纯字符串。
+          E=devhome/build/env.sh
+          : > "$E"
+          printf '# CI 环境：由 workflow 生成，不对应任何真机路径\n' >> "$E"
+          printf 'export JAVA_HOME="%s"\n' "$JAVA_HOME" >> "$E"
+          printf 'export JAVA_BIN="%s/bin"\n' "$JAVA_HOME" >> "$E"
+          printf 'export PATH="%s/bin:%s/build-tools/35.0.0:%s"\n' "$JAVA_HOME" "$ANDROID_HOME" "$PATH" >> "$E"
+          printf 'export ANDROID_JAR="%s/platforms/android-33/android.jar"\n' "$ANDROID_HOME" >> "$E"
+          echo "== 生成的 env.sh =="
+          cat "$E"
+          echo "== 校验 =="
+          test -x "$JAVA_HOME/bin/javac" && echo "  javac OK"
+          test -f "$ANDROID_HOME/platforms/android-33/android.jar" && echo "  android.jar OK"
+          for t in aapt d8 apksigner zipalign; do
+            test -x "$ANDROID_HOME/build-tools/35.0.0/$t" && echo "  $t OK"
+          done
+
+      # ── 自检 ────────────────────────────────────────────────────────────
+      - name: 工具链与素材自检
+        if: inputs.mode == 'deps' || inputs.mode == 'all'
+        run: |
+          set -e
+          export DSH_DEV_HOME="$PWD/devhome"
+          # ★ 必须 source：env.sh 只是写文件，不 source 的话 aapt/d8/apksigner 都不在 PATH 里
+          . devhome/build/env.sh
+          echo "== PATH 里的 android 工具 =="
+          command -v aapt d8 apksigner zipalign || true
+          echo "== java =="; java -version
+          echo "== aapt =="; aapt version || aapt2 version || true
+          echo "== d8 =="; d8 --version || true
+          echo "== apksigner =="; apksigner version || apksigner --version
+          echo "== node =="; node --version
+          echo
+          echo "== payload 关键文件 =="
+          for f in devhome/dshroot/lib/node_modules/@deepseek-ai/dsh/package.json \
+                   devhome/runtime/bin/node devhome/.dsh/cordis.patch.yml; do
+            [ -e "$f" ] && echo "  ✓ $f" || { echo "  ✗ 缺 $f"; exit 1; }
+          done
+          echo
+          echo "== GeckoView 关键文件 =="
+          for f in devhome/geckoview/classes.jar devhome/geckoview/omni.ja \
+                   devhome/geckoview/AndroidManifest.xml \
+                   devhome/geckoview/lib/arm64-v8a/libxul.so; do
+            [ -e "$f" ] && echo "  ✓ $f ($(stat -c %s "$f") 字节)" || { echo "  ✗ 缺 $f"; exit 1; }
+          done
+          echo
+          echo "== androidx 里的 jar/aar =="
+          ls devhome/geckoview/androidx | head -30
+          echo "  共 $(ls devhome/geckoview/androidx | wc -l) 个"
+
+      # ── 构建 ────────────────────────────────────────────────────────────
+      - name: 构建 APK
+        if: inputs.mode == 'build' || inputs.mode == 'all'
+        run: |
+          set -e
+          # ★ 先把所有路径定成绝对路径，再 cd——cd 之后 PWD 就变了，
+          #   下面 DSH_SIGN_DIR 曾写成 $PWD/sign（sign 在 android-app/ 下），会指错地方。
+          ROOT="$PWD"
+          # ★ 同上，必须 source 才有 aapt/d8/apksigner/zipalign
+          . "$ROOT/devhome/build/env.sh"
+          export PATH="$ROOT/devhome/build/bin:$PATH"
+          export DSH_DEV_HOME="$ROOT/devhome"
+          export DSH_GECKOVIEW="$ROOT/devhome/geckoview"
+          export DSH_SIGN_DIR="$ROOT/android-app/sign"
+          echo "DSH_DEV_HOME=$DSH_DEV_HOME"
+          echo "DSH_GECKOVIEW=$DSH_GECKOVIEW"
+          echo "DSH_SIGN_DIR=$DSH_SIGN_DIR"
+          test -f "$DSH_SIGN_DIR/testkey.pk8" && echo "  签名密钥 ✓"
+          cd android-app
+          # 不能用 sh build.sh：脚本 shebang 是 /system/bin/sh（Android），CI 上没这个路径。
+          # 用 bash 显式执行，并且不用管道跑 set -e，避免管道吞掉退出码。
+          bash build.sh 2>&1 | tee /tmp/build.log
+          # 用 PIPESTATUS 取 build.sh 自己的退出码
+          RC=${PIPESTATUS[0]}
+          echo "build.sh 退出码 = $RC"
+          exit $RC
+          echo "== 产物 =="
+          ls -la DeepSeekHarness.apk
+
+      - name: 上传 APK（artifact，仅用于留档）
+        if: (inputs.mode == 'build' || inputs.mode == 'all') && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeekHarness-dual-engine
+          path: android-app/DeepSeekHarness.apk
+          retention-days: 7
+
+      # ★ 关键：artifact 下载需要登录 + 走 Azure blob，国内实测只有 3~27 KB/s。
+      #   Release asset 是真正公开的，用户可以直接拿直链、可以用浏览器/迅雷/夸克多线程。
+      #   tag 用 apk-<run_number>-<短 sha>，每次构建都留下，永久可下。
+      - name: 发布到 Release（公开直链）
+        if: (inputs.mode == 'build' || inputs.mode == 'all') && success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="apk-${{ github.run_number }}"
+          NAME="DeepSeekHarness-1.20.0-dual-${{ github.run_number }}.apk"
+          cp android-app/DeepSeekHarness.apk "$NAME"
+          echo "== 产物 =="
+          ls -la "$NAME"
+          echo "== 图标校验 =="
+          A="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          "$A" dump badging "$NAME" 2>/dev/null | head -12
+          echo "-- APK 内 ic_launcher 条目 --"
+          unzip -l "$NAME" | grep ic_launcher || echo "NO_IC_LAUNCHER_ENTRY"
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+ic = [n for n in z.namelist() if 'ic_launcher' in n.lower()]
+for n in sorted(ic):
+    print("   %-56s %8d B" % (n, z.getinfo(n).file_size))
+print("   共 %d 个图标条目" % len(ic))
+PYICON
+          echo "== 建 Release $TAG =="
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "双引擎 APK #${{ github.run_number }}" \
+            --notes "系统 WebView + GeckoView 双引擎（系统 WebView Chromium >= 94 用系统，< 94 自动用 GeckoView）。包名 com.deepseek.harness，minSdk 26，AOSP 测试密钥签名。构建于 commit ${{ github.sha }}。" \
+            "$NAME"
+          echo "== 公开下载地址 =="
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$NAME"
+
+      - name: 失败时保留日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            /tmp/build.log
+            android-app/out/*.log
+          retention-days: 7
+          if-no-files-found: ignore
