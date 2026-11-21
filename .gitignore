@@ -1,0 +1,14 @@
+# 构建产物
+android-app/out/
+android-app/staging/
+android-app/assets/
+android-app/DeepSeekHarness.apk
+android-app/release.jks
+
+# 本机下载的素材（走 Release，不进仓库）
+assets-dl/
+devhome/
+
+# 杂项
+*.log
+.DS_Store
