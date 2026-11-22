@@ -80,13 +80,41 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 自愈工具做的事：比对三条记录、按需改写、把日志从单帧改写成多帧（zstd 多帧，每帧一次活动）。
 **它在救回被误标坏的会话时救回过整份 66 个会话的列表。**
 
-### 3. 自研插件（不在本仓库源码里，通过 profile 安装）
+### 3. 插件（★分两种来源，别混）
 
-| 插件 | 版本 | 作用 |
+#### 3a. 自研插件（本项目原创）
+
+只有一个：
+
+| 包名 | 版本 | 作用 |
 |---|---|---|
-| `@local/dsh-net` | 1.0.0 | 联网工具：GitHub 仓库搜索/浏览/读文件/看提交/下文件、**必应搜索**、抓网页正文、搜 B 站。**不用代理**——刻意只用国内能直连的接口（`api.github.com` 通、`github.com` 主站超时） |
-| `meow-memory` | 0.31.1 | 跨会话记忆，七层 SQLite（soul/user/project/fact/lesson/topic/rules），按关键词检索后注入 |
-| `dsh-remedy` | 0.4.20 | 修流式响应里的 `MALFORMED_RESPONSE`——把粘连的 tool-call arguments 拆开 |
+| `@local/dsh-net` | 1.0.0 | 联网工具。**不用代理**——刻意只用国内能直连的接口（`api.github.com` 通、`github.com` 主站超时） |
+
+**提供的 11 个工具**
+
+| 工具 | 干什么 |
+|---|---|
+| `web_search_bing` | 必应搜网页（本机唯一可用的通用搜索） |
+| `repo_search` | 按关键词搜 GitHub 仓库 |
+| `repo_files` | 列仓库目录 / 读文件真实内容 |
+| `repo_commits` | 看提交历史 |
+| `repo_download` | 下任意直链文件 |
+| `web_fetch_text` | 抓网页剥标签给正文 |
+| `bilibili_search` | 搜 B 站视频 |
+| `net_keystore` | 读写持久化密钥 |
+| `net_sensitive_stats` | 看敏感词库统计（不返回词本身） |
+| `net_add_sensitive` | 加一个敏感词 / 屏蔽一个域名 |
+| `dialog_snapshot` / `dialog_rollback` | 对话快照与回滚 |
+
+**源码不在本仓库**，在 `files/net-plugin/`：
+`index.js`（57,821 B，主体）/ `denoise.js`（搜索结果去噪）/ `sensitive.js`（敏感词过滤）/ `bilibili.js`。
+
+#### 3b. 第三方 npm 包（★不是本仓库成果）
+
+| 包名 | 版本 | 作用 |
+|---|---|---|
+| `meow-memory` | ^0.31.1 | 跨会话记忆，七层 SQLite（soul/user/project/fact/lesson/topic/rules），按关键词检索后注入 |
+| `dsh-remedy` | ^0.4.20 | 修流式响应里的 `MALFORMED_RESPONSE`——把粘连的 tool-call arguments 拆开 |
 
 装载方式（`profiles/web/package.json`）：
 
@@ -111,8 +139,28 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 }
 ```
 
-**注意**：这三个包和 `payload/`、`_gvmin/` 都没进 git。仓库里只有壳源码和构建脚本，
-真正的 payload 在 Release 里，或者由 CI 从上游 npm 现场拉取。
+### ★★重要：APK 里一个插件都没有
+
+打开 APK 的 `assets/payload.zip` 逐项看过，实际内容是：
+
+```json
+// profiles/web/package.json
+"dependencies": {},
+"dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"] } }
+```
+
+```yaml
+# cordis.patch.yml 的 insert，只有 6 项
+bash-local / tool-shizuku / tool-android / tool-accessibility / tool-vscreen / tool-browser
+# ★没有 net，没有 meow-memory，没有 remedy
+```
+
+**也就是说：装完 = 一个裸壳。没有跨会话记忆、没有联网搜索、没有流式修复。**
+
+上面 3a / 3b 的插件都要自己挂，方法见 `cordis.patch.yml` 里的 insert 写法，
+或者参考 profile 的 `package.json` + `pnpm install` + `cordis.patch.yml` 三段式。
+
+**另**：这些包和 `payload/`、`_gvmin/` 都没进 git。仓库里只有壳源码和构建脚本。
 
 ---
 
@@ -145,10 +193,20 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 | `MainActivity.java` 60.9 万字节 | 单文件，改起来很痛苦，是历史债，没重构 |
 | **没有 CI 缓存** | 每次构建都要重新拉 payload，约 228 MB |
 | **不提供自动更新** | 手动换 APK |
+| **★APK 里没有插件** | 装完是裸壳：没有跨会话记忆、没有联网、没有流式修复。三个插件要自己挂，见 3a / 3b |
+| **★重装要重来一遍** | 挂插件、授超级用户、授悬浮窗，这些都不在 APK 里。更新 APK 会把 payload/ 整个覆盖 |
 
 ---
 
-## 四、安全与隐私
+## 四、安装
+
+- **用什么装都行** —— MT 管理器、pm install、Shizuku、adb，能装上就用
+- **签名** —— AOSP 公开 testkey（CN=Android），没有私钥门槛
+- **★装完不是成品** —— 插件和权限要自己补，见「三、已知限制」
+
+---
+
+## 五、安全与隐私
 
 - **不联网上报**：遥测插件已禁用
 - **无任何激活码 / 账号体系**：装完即用
@@ -157,7 +215,7 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 
 ---
 
-## 五、Releases
+## 六、Releases
 
 | Tag | 内容 |
 |---|---|
@@ -168,14 +226,14 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 
 ---
 
-## 六、上游
+## 七、上游
 
 本分支不修改 DSH 内核（`@deepseek-ai/dsh`）的任何业务代码。
 内核问题请回到上游仓库报；壳层/Android 适配问题在这里报。
 
 ---
 
-## 许可
+## 八、许可
 
 跟随上游。`android-app/` 和 `console-theme/` 里的原创部分同样跟随上游许可。
 `sign/testkey.*` 是构建测试密钥，**没有任何安全意义**。
