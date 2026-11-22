@@ -1,0 +1,25 @@
+{
+  "name": "@local/dsh-net",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Outbound knowledge tools: GitHub repository search, repository file browsing and reading, file download, and Bing web search, for networks where other providers are unreachable",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "index.js",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
