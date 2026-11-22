@@ -80,11 +80,7 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 自愈工具做的事：比对三条记录、按需改写、把日志从单帧改写成多帧（zstd 多帧，每帧一次活动）。
 **它在救回被误标坏的会话时救回过整份 66 个会话的列表。**
 
-### 3. 插件（★分两种来源，别混）
-
-#### 3a. 自研插件（本项目原创）
-
-只有一个：
+### 3. 自研插件（本项目原创）
 
 | 包名 | 版本 | 作用 |
 |---|---|---|
@@ -109,35 +105,7 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 **源码不在本仓库**，在 `files/net-plugin/`：
 `index.js`（57,821 B，主体）/ `denoise.js`（搜索结果去噪）/ `sensitive.js`（敏感词过滤）/ `bilibili.js`。
 
-#### 3b. 第三方 npm 包（★不是本仓库成果）
-
-| 包名 | 版本 | 作用 |
-|---|---|---|
-| `meow-memory` | ^0.31.1 | 跨会话记忆，七层 SQLite（soul/user/project/fact/lesson/topic/rules），按关键词检索后注入 |
-| `dsh-remedy` | ^0.4.20 | 修流式响应里的 `MALFORMED_RESPONSE`——把粘连的 tool-call arguments 拆开 |
-
-装载方式（`profiles/web/package.json`）：
-
-```json
-"dependencies": {
-  "@deepseek-ai/schemastery": "^3.18.5",
-  "@local/dsh-net": "link:/.../net-plugin",
-  "meow-memory": "^0.31.1",
-  "dsh-remedy": "^0.4.20"
-},
-"dsh": {
-  "profile": {
-    "bundles": [
-      "@deepseek-ai/dsh-base",
-      "@deepseek-ai/dsh-web-app",
-      "@deepseek-ai/dsh-experimental-agent-team-profile",
-      "meow-memory",
-      "dsh-remedy"
-    ],
-    "patchReload": "live"
-  }
-}
-```
+装载用 DSH 的 profile 三段式：`package.json` 声明 + `pnpm install` + `cordis.patch.yml` 写配置段。
 
 ### ★★重要：APK 里一个插件都没有
 
@@ -152,12 +120,12 @@ DSH 的一个会话靠**三条记录**绑定工作区：
 ```yaml
 # cordis.patch.yml 的 insert，只有 6 项
 bash-local / tool-shizuku / tool-android / tool-accessibility / tool-vscreen / tool-browser
-# ★没有 net，没有 meow-memory，没有 remedy
+# ★没有 net
 ```
 
-**也就是说：装完 = 一个裸壳。没有跨会话记忆、没有联网搜索、没有流式修复。**
+**也就是说：装完 = 一个裸壳。没有联网搜索。**
 
-上面 3a / 3b 的插件都要自己挂，方法见 `cordis.patch.yml` 里的 insert 写法，
+上面那个 `@local/dsh-net` 要自己挂，方法见 `cordis.patch.yml` 里的 insert 写法，
 或者参考 profile 的 `package.json` + `pnpm install` + `cordis.patch.yml` 三段式。
 
 **另**：这些包和 `payload/`、`_gvmin/` 都没进 git。仓库里只有壳源码和构建脚本。
@@ -193,7 +161,7 @@ bash-local / tool-shizuku / tool-android / tool-accessibility / tool-vscreen / t
 | `MainActivity.java` 60.9 万字节 | 单文件，改起来很痛苦，是历史债，没重构 |
 | **没有 CI 缓存** | 每次构建都要重新拉 payload，约 228 MB |
 | **不提供自动更新** | 手动换 APK |
-| **★APK 里没有插件** | 装完是裸壳：没有跨会话记忆、没有联网、没有流式修复。三个插件要自己挂，见 3a / 3b |
+| **★APK 里没有插件** | 装完是裸壳：没有联网搜索。`@local/dsh-net` 要自己挂，见「3. 自研插件」 |
 | **★重装要重来一遍** | 挂插件、授超级用户、授悬浮窗，这些都不在 APK 里。更新 APK 会把 payload/ 整个覆盖 |
 
 ---
