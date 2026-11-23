@@ -521,10 +521,10 @@ public class MainActivity extends Activity {
         FrameLayout root = engineRoot;
         root.setBackgroundColor(chromeBg()); // v1.13.11：跟随主题/页面底色
         // 成员视图（webView/statusView/progressBar）可能已挂在旧容器上，先全部摘下，避免重复挂载崩溃。
-        detachView(webView);
+        detachView(webView.asView());
         detachView(statusView);
         detachView(progressBar);
-        root.addView(webView, new FrameLayout.LayoutParams(
+        root.addView(webView.asView(), new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
         LinearLayout box = new LinearLayout(this);
@@ -1410,10 +1410,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQ_FILE_CHOOSER) {
-            // 两条分支共用同一个 requestCode，按「谁在等」分派：
-            //   GeckoView 等 → gvFileResult / gvFilePrompt
-            //   系统 WebView 等 → fileChooserCallback（★2026-11-23 新增，原来这里直接 return，
-            //     系统 WebView 选完文件没人接，等于白选）
+            // v1.17.3：文件选择改由 GeckoView 的 onFilePrompt 驱动（见 handleFilePrompt），
+            // 这里只把系统选择器的结果回填给那一次 prompt（GeckoView 用 GeckoResult 收结果）。
             if (gvFileResult != null && gvFilePrompt != null) {
                 Uri[] picked = null;
                 if (resultCode == RESULT_OK && data != null) {
@@ -1433,6 +1431,7 @@ public class MainActivity extends Activity {
                 gvFileResult = null;
                 gvFilePrompt = null;
             }
+            // ★2026-11-23：系统 WebView 走同一条路（原来这里直接 return，System 的结果没人接）
             if (fileChooserCallback != null) {
                 Uri[] picked = null;
                 if (resultCode == RESULT_OK && data != null) {
@@ -4129,7 +4128,7 @@ public class MainActivity extends Activity {
                             lastRespawnAt = now;
                             Log.w(TAG, "node died, respawning engine");
                             spawnNode(new File(getFilesDir(), "payload"));
-                            final GvWebView wv = webView;
+                            final PageView wv = webView;
                             ui.post(new Runnable() {
                                 @Override public void run() { wv.loadUrl(webHomeUrl()); }
                             });
@@ -11065,9 +11064,8 @@ public class MainActivity extends Activity {
             // ★2026-11-23 修：「+ → 文件」点了没反应。
             //   官方前端用 <input type="file"> 选文件，Android WebView 必须实现
             //   WebChromeClient.onShowFileChooser 才会弹系统文件选择器。
-            //   原来这里没有 setWebChromeClient（compat 变体一直缺这一块），
-            //   于是点击 → WebView 用默认实现直接返回 false → 既不弹选择器也不报错。
-            //   本机 Chromium 153 永远走 SYSTEM 分支，所以症状是 100% 复现。
+            //   compat 变体一直缺这一块，于是点击后 WebView 用默认实现直接返回 false，
+            //   既不弹选择器也不报错。本机 Chromium 153 永远走 SYSTEM 分支，所以 100% 复现。
             view.setWebChromeClient(new WebChromeClient() {
                 @Override
                 public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback,
@@ -11249,7 +11247,7 @@ public class MainActivity extends Activity {
             });
         }
 
-        void loadUrl(String url) {
+        @Override public void loadUrl(String url) {
             try {
                 session.setActive(true);
                 session.loadUri(url);
@@ -11258,21 +11256,21 @@ public class MainActivity extends Activity {
             }
         }
 
-        boolean canGoBack() { return canGoBack; }
+        @Override public boolean canGoBack() { return canGoBack; }
 
-        void goBack() {
+        @Override public void goBack() {
             try { session.goBack(); } catch (Throwable ignored) {}
         }
 
-        void onResume() {
+        @Override public void onResume() {
             try { session.setActive(true); } catch (Throwable ignored) {}
         }
 
-        void onPause() {
+        @Override public void onPause() {
             try { session.setActive(false); } catch (Throwable ignored) {}
         }
 
-        void destroy() {
+        @Override public void destroy() {
             try { session.close(); } catch (Throwable ignored) {}
             try { view.releaseSession(); } catch (Throwable ignored) {}
         }
