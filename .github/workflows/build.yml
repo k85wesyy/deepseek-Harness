@@ -197,7 +197,7 @@ jobs:
         run: |
           set -e
           TAG="apk-${{ github.run_number }}"
-          NAME="DeepSeekHarness-1.20.0-dual.2-${{ github.run_number }}.apk"
+          NAME="DeepSeekHarness-1.20.0-dual.3-${{ github.run_number }}.apk"
           cp android-app/DeepSeekHarness.apk "$NAME"
           echo "== 产物 =="
           ls -la "$NAME"
@@ -209,7 +209,7 @@ jobs:
           echo "== 建 Release $TAG =="
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "双引擎 APK 1.20.0-dual.2 #${{ github.run_number }}" \
+            --title "双引擎 APK 1.20.0-dual.3 #${{ github.run_number }}" \
             --notes "系统 WebView + GeckoView 双引擎（系统 WebView Chromium >= 94 用系统，< 94 自动用 GeckoView）。包名 com.deepseek.harness，minSdk 26，AOSP 测试密钥签名。构建于 commit ${{ github.sha }}。" \
             "$NAME"
           echo "== 公开下载地址 =="
