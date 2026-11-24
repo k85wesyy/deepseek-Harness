@@ -31,8 +31,6 @@ import android.view.View;
 import android.view.ViewGroup;
 // v1.17.3：compat 变体改用内嵌 GeckoView 渲染（不再依赖系统 WebView）。
 // 仍保留 android.webkit.WebView：checkWebViewCompat() 里对它的引用保留为文档性代码（该方法在 compat 已早退）。
-import android.webkit.ValueCallback;
-import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
@@ -240,10 +238,6 @@ public class MainActivity extends Activity {
     // 网页 <input type="file"> 选完文件后的回填句柄（v1.17.3：由 GeckoView 的 onFilePrompt 提供）
     private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> gvFileResult;
     private GeckoSession.PromptDelegate.FilePrompt gvFilePrompt;
-    // ★2026-11-23：系统 WebView 走 WebChromeClient.onShowFileChooser 时的回填句柄。
-    //   原来只有 GeckoView 那条路有实现，系统 WebView 分支连 setWebChromeClient 都没设，
-    //   导致页面里点「+ → 文件」完全没反应（既不弹选择器，也不报错）。
-    private ValueCallback<Uri[]> fileChooserCallback;
     private TextView statusView;
     private ProgressBar progressBar;
     private ImageView splashLogo;
@@ -1430,22 +1424,6 @@ public class MainActivity extends Activity {
                 gvFileResult.complete(resp);
                 gvFileResult = null;
                 gvFilePrompt = null;
-            }
-            // ★2026-11-23：系统 WebView 走同一条路（原来这里直接 return，System 的结果没人接）
-            if (fileChooserCallback != null) {
-                Uri[] picked = null;
-                if (resultCode == RESULT_OK && data != null) {
-                    if (data.getClipData() != null) {
-                        int count = data.getClipData().getItemCount();
-                        picked = new Uri[count];
-                        for (int i = 0; i < count; i++) picked[i] = data.getClipData().getItemAt(i).getUri();
-                    } else if (data.getData() != null) {
-                        picked = new Uri[]{data.getData()};
-                    }
-                }
-                // 取消时回 null（不是空数组）：空数组会让页面以为"选了 0 个文件"
-                try { fileChooserCallback.onReceiveValue(picked); } catch (Throwable ignored) {}
-                fileChooserCallback = null;
             }
             return;
         }
@@ -11061,32 +11039,6 @@ public class MainActivity extends Activity {
                     onPageReadyCommon();
                 }
             });
-            // ★2026-11-23 修：「+ → 文件」点了没反应。
-            //   官方前端用 <input type="file"> 选文件，Android WebView 必须实现
-            //   WebChromeClient.onShowFileChooser 才会弹系统文件选择器。
-            //   compat 变体一直缺这一块，于是点击后 WebView 用默认实现直接返回 false，
-            //   既不弹选择器也不报错。本机 Chromium 153 永远走 SYSTEM 分支，所以 100% 复现。
-            view.setWebChromeClient(new WebChromeClient() {
-                @Override
-                public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback,
-                                                 FileChooserParams params) {
-                    // 同一时刻只允许一个在飞的选择器：有旧的先作废，否则那次页面请求会一直挂着
-                    if (fileChooserCallback != null) {
-                        try { fileChooserCallback.onReceiveValue(null); } catch (Throwable ignored) {}
-                    }
-                    fileChooserCallback = callback;
-                    try {
-                        Intent intent = params.createIntent();
-                        intent.addCategory(Intent.CATEGORY_OPENABLE);
-                        startActivityForResult(intent, REQ_FILE_CHOOSER);
-                        return true;
-                    } catch (Throwable t) {
-                        Log.w(TAG, "system WebView file chooser failed", t);
-                        fileChooserCallback = null;
-                        return false;
-                    }
-                }
-            });
         }
 
         @Override public android.view.View asView() { return this; }
@@ -11103,7 +11055,39 @@ public class MainActivity extends Activity {
     }
 
     /** v1.21.11：探测系统 WebView 的 Chromium 主版本号（拿不到返回 -1）。 */
+    /**
+     * v1.21.11：探测系统 WebView 的 Chromium 主版本号（拿不到返回 -1）。
+     * ★2026-11-24 改造：优先用【静态 API】，不创建 WebView 实例。
+     *   原实现先 new WebView(this) 再读 UA —— 在 WebView 包异常的环境（如 VMOS 里
+     *   com.google.android.webview 处于 isOrphaned 状态）会创建一个坏实例，
+     *   native 层直接崩，catch(Throwable) 接不住（那是 SIGABRT 不是 Java 异常），
+     *   表现为「点图标瞬间闪退、连界面都看不到」。
+     *   作者的 compat 版是纯 GeckoView，从头到尾不碰系统 WebView，所以它能跑。
+     */
     private int detectSystemWebViewChrome() {
+        int c = detectChromeViaPackage();
+        if (c > 0) return c;
+        return detectChromeViaInstance();
+    }
+
+    /** 不创建任何 View，只用静态 API 拿系统 WebView 的版本。拿不到返回 -1。 */
+    private int detectChromeViaPackage() {
+        if (Build.VERSION.SDK_INT < 26) return -1;
+        try {
+            android.content.pm.PackageInfo pi = WebView.getCurrentWebViewPackage();
+            if (pi == null || pi.versionName == null) return -1;
+            int c = parseChromeMajor(pi.versionName);
+            if (c > 0) return c;
+            int dot = pi.versionName.indexOf('.');
+            if (dot > 0) {
+                try { return Integer.parseInt(pi.versionName.substring(0, dot)); } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        return -1;
+    }
+
+    /** 兜底：创建实例读 UA。★这是最后手段，静态 API 拿不到才走到这里。 */
+    private int detectChromeViaInstance() {
         try {
             WebView probe = new WebView(this);
             try {
@@ -11113,19 +11097,6 @@ public class MainActivity extends Activity {
                 try { probe.destroy(); } catch (Throwable ignored) {}
             }
         } catch (Throwable ignored) {}
-        if (Build.VERSION.SDK_INT >= 26) {
-            try {
-                android.content.pm.PackageInfo pi = WebView.getCurrentWebViewPackage();
-                if (pi != null && pi.versionName != null) {
-                    int c = parseChromeMajor(pi.versionName);
-                    if (c > 0) return c;
-                    int dot = pi.versionName.indexOf('.');
-                    if (dot > 0) {
-                        try { return Integer.parseInt(pi.versionName.substring(0, dot)); } catch (Throwable ignored) {}
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
         return -1;
     }
 
